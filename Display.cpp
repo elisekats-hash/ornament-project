@@ -728,71 +728,214 @@ void pattern6(){
   frame6++;
 }
 
-// snoopy walking across the screen
+// snoopy asleep on his doghouse while it snows
 void pattern7(){
   display.clearDisplay();
 
-  // --- Walk cycle timing ---
-  int walkSpeed = 1;
-  int spriteWidth = 34; // rough width incl. snout/tail, used for wrap-around
-  int walkX = -spriteWidth + ((frame7 * walkSpeed) % (SCREEN_WIDTH + spriteWidth));
+  const uint16_t UNLIT = SH110X_BLACK;
+  const uint32_t t = (uint32_t)frame7;
+  const float TURN = 2.0f * PI;           // one full circle, in radians
 
-  int groundY = SCREEN_HEIGHT - 12; // baseline for feet
+  // --- Sprites: 1 bit per pixel, leftmost pixel in the top bit, rows padded to whole bytes ---
+  static const uint8_t SNOOPY[] PROGMEM = {   // 48 x 18
+    0x1E, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x23, 0x80, 0x00, 0x00, 0x00, 0x00,
+    0x63, 0xC0, 0x00, 0x00, 0x00, 0x00,
+    0x7F, 0xF0, 0x00, 0x00, 0x00, 0x00,
+    0x7F, 0xF0, 0x00, 0x00, 0x00, 0x1E,
+    0x7F, 0xF8, 0x00, 0x00, 0x00, 0x1F,
+    0x7F, 0xF8, 0x00, 0x00, 0x00, 0x3F,
+    0x7F, 0xF8, 0x07, 0xFF, 0x00, 0x3F,
+    0x7F, 0xF8, 0x1F, 0xFF, 0xC0, 0x7F,
+    0x71, 0xF8, 0x3F, 0xFF, 0xF8, 0x7F,
+    0x7F, 0xF8, 0x7F, 0xFF, 0xFE, 0x7F,
+    0xFF, 0xFC, 0x7F, 0xFF, 0xFF, 0x7F,
+    0xFF, 0xFC, 0xFF, 0xFF, 0xFF, 0xFF,
+    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+    0x7F, 0xFF, 0xFF, 0xFF, 0xFF, 0xFE,
+    0x7F, 0xFF, 0xFF, 0xFF, 0xFF, 0xFC,
+    0x3F, 0xFF, 0xFF, 0xFF, 0xFF, 0xFC,
+  };
 
-  float legPhase = frame7 * 0.35;
-  int bob = (int)(sin(legPhase * 2) * 1.0); // subtle bounce synced to gait
+  static const uint8_t GROUND[] PROGMEM = {   // 128 x 6, the top of the snow
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x18, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x09, 0x00, 0x00, 0x00, 0x78, 0x00, 0x00, 0x00, 0x00, 0x1C, 0x00, 0x00, 0x04, 0x80, 0x00,
+    0x00, 0x06, 0x00, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFE, 0x00, 0x00, 0x03, 0x00, 0x00,
+    0x00, 0x04, 0x00, 0x00, 0x03, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x80, 0x00, 0x02, 0x00, 0x00,
+    0x07, 0xFF, 0xFF, 0x00, 0x3F, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xF0, 0x00, 0x3F, 0xFF, 0xFF,
+  };
 
-  // --- Body ---
-  int bodyW = 20;
-  int bodyH = 10;
-  int bodyX = walkX + 10;
-  int bodyY = groundY - bodyH - 6 + bob;
-  display.drawRoundRect(bodyX, bodyY, bodyW, bodyH, 4, WHITE);
+  // --- Layout ---
+  const int RIDGE_Y = 24;                 // top of the roof, where Snoopy lies
+  const int EAVE_Y = 45;                  // bottom edge of the roof
+  const int ROOF_L = 41, ROOF_R = 86;     // ends of the ridge
+  const int ROOF_FLARE = 4;               // how much wider each side is at the eave
+  const int PLANK = 7;                    // rows per roof plank, including its dark gap
+  const int WALL_L = 45, WALL_R = 82;     // doghouse walls under the roof
+  const int WALL_BOTTOM = 57;
+  const int GROUND_Y = 55;                // top row of the GROUND sprite
+  const int GROUND_H = 6;
+  const int SNOOPY_W = 48, SNOOPY_H = 18;
+  const int SNOOPY_X = 40;
+  const int SNOOPY_Y = RIDGE_Y - SNOOPY_H;
 
-  // --- Head (leading edge, facing direction of travel) ---
-  int headR = 8;
-  int headCx = bodyX + bodyW - 2;
-  int headCy = bodyY - headR + 4 + bob;
-  display.drawCircle(headCx, headCy, headR, WHITE);
+  // --- Timing, in frames (about 30 per second) ---
+  const int BREATH = 80;                  // one full breath
+  const int BREATH_OUT = 38;              // point in the breath where he starts to exhale
+  const int GUST_EVERY = 240;             // a gust of wind comes through this often
+  const int GUST_LENGTH = 70;
+  const int FIRST_GUST = 130;
+  const int GUST_PUSH = 26;               // columns a near snowflake is carried per gust
 
-  // Eye
-  display.fillCircle(headCx + 2, headCy - 2, 1, WHITE);
+  // --- Wind: calm most of the time, then a gust that leans the snow and lifts his ear ---
+  uint32_t windClock = t + (GUST_EVERY - FIRST_GUST);
+  float gustPhase = (float)(windClock % GUST_EVERY) / GUST_LENGTH;  // 0..1 while a gust blows
+  float gust = 0.0f;                      // strength right now: 0 calm, 1 peak
+  float carried = 1.0f;                   // share of this gust's push already delivered
+  if (gustPhase < 1.0f) {
+    gust = 0.5f - 0.5f * cosf(TURN * gustPhase);
+    carried = gustPhase - sinf(TURN * gustPhase) / TURN;
+  }
+  uint32_t drift = (windClock / GUST_EVERY) * GUST_PUSH + (uint32_t)(GUST_PUSH * carried);
 
-  // --- Snout ---
-  int snoutCx = headCx + 8;
-  int snoutCy = headCy + 3;
-  display.fillCircle(snoutCx, snoutCy, 3, WHITE);
-  display.fillCircle(snoutCx + 3, snoutCy, 1, WHITE); // nose tip
+  // --- Snow: drawn first, so the doghouse and Snoopy sit in front of it ---
+  // Each flake's position is worked out from the frame number alone, so there is
+  // no state to keep. Three layers give depth: far flakes are slow, near ones fast.
+  auto scramble = [](uint32_t n) -> uint32_t {
+    n ^= n >> 16; n *= 0x7FEB352DUL;
+    n ^= n >> 15; n *= 0x846CA68BUL;
+    n ^= n >> 16;
+    return n;
+  };
+  const uint32_t FALL_SPAN = (SCREEN_HEIGHT + 3) * 256UL;   // rows fallen per lap, in 1/256ths
+  static const uint8_t  flakeCount[3] = {22, 13, 6};        // far, middle, near
+  static const uint16_t fallSpeed[3]  = {56, 104, 168};     // rows per frame, in 1/256ths
 
-  // --- Ear (floppy, sways with gait) ---
-  float earSwing = sin(legPhase) * 2.0;
-  int earTopX = headCx - 4;
-  int earTopY = headCy - 2;
-  int earBotX = earTopX - 3 + (int)earSwing;
-  int earBotY = earTopY + 9;
-  display.drawLine(earTopX, earTopY, earBotX, earBotY, WHITE);
-  display.drawLine(earTopX - 2, earTopY, earBotX - 2, earBotY, WHITE);
+  for (int layer = 0; layer < 3; layer++) {
+    for (int i = 0; i < flakeCount[layer]; i++) {
+      uint32_t seed = scramble(layer * 64 + i + 1);
+      uint32_t fallen = seed % FALL_SPAN + t * fallSpeed[layer];
+      uint32_t lap = fallen / FALL_SPAN;                    // new random column every lap
+      int y = (int)((fallen % FALL_SPAN) >> 8) - 3;
 
-  // --- Legs (scissor walk cycle, front/back opposite phase) ---
-  int legBaseY = bodyY + bodyH;
-  float frontSwing = sin(legPhase) * 4.0;
-  float backSwing = sin(legPhase + PI) * 4.0;
+      float sway = sinf(((t + seed) & 127) * (TURN / 128)) * (layer + 1);   // side to side, every 128 frames
+      int x = (scramble(seed + lap) % SCREEN_WIDTH
+               + drift * (layer + 2) / 4                    // near layers catch more wind
+               + (uint32_t)(sway + 8.5f)) % SCREEN_WIDTH;
 
-  int frontLegX = bodyX + bodyW - 5;
-  int backLegX = bodyX + 4;
+      if (layer == 2) {
+        display.fillRect(x, y, 2, 2, WHITE);
+      } else {
+        display.drawPixel(x, y, WHITE);
+      }
+    }
+  }
 
-  display.drawLine(frontLegX, legBaseY, frontLegX + (int)frontSwing, legBaseY + 6, WHITE);
-  display.drawLine(backLegX, legBaseY, backLegX + (int)backSwing, legBaseY + 6, WHITE);
+  // --- Roof: a checkerboard reads as grey, so the solid white dog stands out on it ---
+  for (int y = RIDGE_Y; y <= EAVE_Y; y++) {
+    int flare = (y - RIDGE_Y) * ROOF_FLARE / (EAVE_Y - RIDGE_Y);
+    int left = ROOF_L - flare;
+    int right = ROOF_R + flare;
 
-  // --- Tail (wagging, curls up at the back) ---
-  float tailAngle = -40 + 30 * (sin(legPhase * 1.5) * 0.5 + 0.5);
-  float rad = tailAngle * DEG_TO_RAD;
-  int tailBaseX = bodyX;
-  int tailBaseY = bodyY + 2;
-  int tailLen = 8;
-  int tailEndX = tailBaseX - (int)(tailLen * cos(rad));
-  int tailEndY = tailBaseY - (int)(tailLen * sin(rad));
-  display.drawLine(tailBaseX, tailBaseY, tailEndX, tailEndY, WHITE);
+    display.drawFastHLine(left, y, right - left + 1, UNLIT);   // hide the snow behind the roof
+
+    bool isGap = (y - RIDGE_Y) % PLANK == 0;                   // dark line between planks
+    if (y == EAVE_Y) {
+      display.drawFastHLine(left, y, right - left + 1, WHITE);
+    } else if (!isGap) {
+      for (int x = left + 1; x < right; x++) {
+        if ((x + y) & 1) display.drawPixel(x, y, WHITE);
+      }
+    }
+    if (y > RIDGE_Y) {                                         // ridge row stays dark under Snoopy
+      display.drawPixel(left, y, WHITE);
+      display.drawPixel(right, y, WHITE);
+    }
+  }
+
+  // Staggered plank ends, across three rows of planks
+  static const uint8_t jointX[]   = {55, 72, 47, 64, 80, 57, 74};
+  static const uint8_t jointRow[] = { 0,  0,  1,  1,  1,  2,  2};
+  for (int i = 0; i < 7; i++) {
+    display.drawFastVLine(jointX[i], RIDGE_Y + 1 + jointRow[i] * PLANK, PLANK - 1, UNLIT);
+  }
+
+  // --- Walls: a sparser dot pattern, so they sit in the roof's shadow ---
+  display.fillRect(WALL_L, EAVE_Y + 1, WALL_R - WALL_L + 1, WALL_BOTTOM - EAVE_Y, UNLIT);
+  for (int y = EAVE_Y + 2; y <= WALL_BOTTOM; y++) {
+    for (int x = WALL_L + 1; x < WALL_R; x++) {
+      if (((x + 2 * y) & 3) == 0) display.drawPixel(x, y, WHITE);
+    }
+  }
+  display.drawFastVLine(WALL_L, EAVE_Y + 1, WALL_BOTTOM - EAVE_Y, WHITE);
+  display.drawFastVLine(WALL_R, EAVE_Y + 1, WALL_BOTTOM - EAVE_Y, WHITE);
+
+  // --- Snoopy ---
+  display.drawBitmap(SNOOPY_X, SNOOPY_Y, SNOOPY, SNOOPY_W, SNOOPY_H, WHITE);
+
+  // Breathing: his belly fills out, rises one pixel, then settles again
+  int breathFrame = t % BREATH;
+  int breath = 0;                                     // 0 resting, 1 fuller, 2 fuller and taller
+  if (breathFrame < 10) breath = 1;
+  else if (breathFrame < BREATH_OUT) breath = 2;
+  else if (breathFrame < BREATH_OUT + 10) breath = 1;
+
+  if (breath >= 1) {
+    display.drawFastHLine(SNOOPY_X + 20, SNOOPY_Y + 7, 13, WHITE);
+    display.drawFastHLine(SNOOPY_X + 18, SNOOPY_Y + 8, 17, WHITE);
+  }
+  if (breath == 2) {
+    display.drawFastHLine(SNOOPY_X + 22, SNOOPY_Y + 6, 9, WHITE);
+  }
+
+  // Dreaming: now and then his foot kicks twice
+  int dreamFrame = t % GUST_EVERY;
+  if ((dreamFrame >= 60 && dreamFrame < 64) || (dreamFrame >= 68 && dreamFrame < 72)) {
+    display.drawFastHLine(SNOOPY_X + 43, SNOOPY_Y + 3, 4, WHITE);
+  }
+
+  // Nose, closed eye and collar are unlit pixels cut into the white
+  display.fillRect(SNOOPY_X + 3, SNOOPY_Y + 1, 3, 2, UNLIT);
+  display.drawFastHLine(SNOOPY_X + 4, SNOOPY_Y + 9, 3, UNLIT);
+  display.drawFastVLine(SNOOPY_X + 14, SNOOPY_Y + 13, 5, UNLIT);
+
+  // Ear: hangs down over the roof, and bends with the wind.
+  // It is dark with a white rim, so it shows against both the head and the roof.
+  const int EAR_ROWS = 14;
+  for (int row = 0; row <= EAR_ROWS; row++) {
+    int bend = (int)(gust * 4.0f * row * row / (EAR_ROWS * EAR_ROWS) + 0.5f);
+    int x = SNOOPY_X + 2 + bend;
+    int y = SNOOPY_Y + 12 + row;
+    if (row < EAR_ROWS) {
+      display.drawFastHLine(x - 1, y, 5, WHITE);
+      display.drawFastHLine(x, y, 3, UNLIT);
+    } else {
+      display.drawFastHLine(x, y, 3, WHITE);          // rounded tip
+    }
+  }
+
+  // --- Snowy ground, with drifts piled against the walls ---
+  display.drawBitmap(0, GROUND_Y, GROUND, SCREEN_WIDTH, GROUND_H, WHITE);
+  display.fillRect(0, GROUND_Y + GROUND_H, SCREEN_WIDTH, SCREEN_HEIGHT - GROUND_Y - GROUND_H, WHITE);
+
+  // --- Zzz: one leaves with each breath out, drifting away and growing ---
+  const int Z_LIFE = 3 * BREATH;                      // so three are in the air at once
+  for (int k = 0; k < 3; k++) {
+    int age = (t + Z_LIFE - BREATH_OUT - k * BREATH) % Z_LIFE;
+    float rise = (float)age / Z_LIFE;                 // 0 just born, 1 about to vanish
+    int size = 4 + (int)(rise * 3);                   // 4, 5, then 6 pixels
+    int zx = SNOOPY_X - 8 - (int)(rise * 30.0f);
+    int zy = SNOOPY_Y + 4 - (int)(rise * 8.0f + sinf(rise * 12.0f) * 1.2f);
+
+    display.fillRect(zx - 1, zy - 1, size + 2, size + 2, UNLIT);   // keep flakes off the letter
+    display.drawFastHLine(zx, zy, size, WHITE);
+    display.drawFastHLine(zx, zy + size - 1, size, WHITE);
+    for (int i = 1; i < size - 1; i++) {
+      display.drawPixel(zx + size - 1 - i, zy + i, WHITE);
+    }
+  }
 
   displayOLED();
 
